@@ -17,7 +17,7 @@
 import UIKit
 import Firebase
 import FirebaseAuthUI
-
+import FirebaseGoogleAuthUI
 // Your Google app's client ID, which can be found in the GoogleService-Info.plist file
 // and is stored in the `clientID` property of your FIRApp options.
 // Firebase Google auth is built on top of Google sign-in, so you'll have to add a URL
@@ -60,9 +60,13 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     // MARK: Life Cycle
     
     override func viewDidLoad() {
-        self.signedInStatus(isSignedIn: true)
+        configureAuth()
         
         // TODO: Handle what users see when view loads
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        subscribeToKeyboardNotifications()
     }
     
     override func viewWillDisappear(_ animated: Bool) {
@@ -74,10 +78,33 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     func configureAuth() {
         // TODO: configure firebase authentication
+        FUIAuth.defaultAuthUI()?.providers = [FUIGoogleAuth()]
+        _authHandle = FIRAuth.auth()?.addStateDidChangeListener({ (auth, user) in
+            self.messages.removeAll(keepingCapacity: true)
+            self.messagesTable.reloadData()
+            
+            if let currentUser = user {
+                if self.user != currentUser {
+                    self.user = currentUser
+                    self.signedInStatus(isSignedIn: true)
+                    let userName = currentUser.email?.components(separatedBy: "@").first
+                    self.displayName = userName!
+                }
+            } else {
+                self.signedInStatus(isSignedIn: false)
+                self.loginSession()
+            }
+        })
     }
     
     func configureDatabase() {
         // TODO: configure database to sync messages
+        ref = FIRDatabase.database().reference()
+        _refHandle = ref.child("messages").observe(.childAdded, with: { (snapshot) in
+            self.messages.append(snapshot)
+            self.messagesTable.insertRows(at: [IndexPath(row: self.messages.count - 1, section: 0)] , with: .automatic)
+            self.scrollToBottomMessage()
+        })
     }
     
     func configureStorage() {
@@ -86,6 +113,8 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     deinit {
         // TODO: set up what needs to be deinitialized when view is no longer being used
+        ref.child("messages").removeObserver(withHandle: _refHandle)
+        FIRAuth.auth()?.removeStateDidChangeListener(_authHandle)
     }
     
     // MARK: Remote Config
@@ -115,6 +144,7 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
             messagesTable.estimatedRowHeight = 122.0
             backgroundBlur.effect = nil
             messageTextField.delegate = self
+            configureDatabase()
             
             // TODO: Set up app to send and receive messages when signed in
         }
@@ -127,8 +157,11 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     // MARK: Send Message
     
-    func sendMessage(data: [String:String]) {
+    func sendMessage(data: inout [String: String]) {
         // TODO: create method that pushes message to the firebase database
+        // childByAutoId returns a database reference
+        data[Constants.MessageFields.name] = displayName
+        ref.child("messages").childByAutoId().setValue(data)
     }
     
     func sendPhotoMessage(photoData: Data) {
@@ -208,6 +241,12 @@ extension FCViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         // dequeue cell
         let cell: UITableViewCell! = messagesTable.dequeueReusableCell(withIdentifier: "messageCell", for: indexPath)
+        let messageSnapShot: FIRDataSnapshot = messages[indexPath.row]
+        let message = messageSnapShot.value as! [String: String]
+        let name = message[Constants.MessageFields.name] ?? "N/A"
+        let text = message[Constants.MessageFields.text] ?? "N/A"
+        cell.imageView?.image = placeholderImage
+        cell.textLabel?.text = name + " " + text
         return cell!
         // TODO: update cell to display message data
     }
@@ -278,8 +317,8 @@ extension FCViewController: UITextFieldDelegate {
     
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         if !textField.text!.isEmpty {
-            let data = [Constants.MessageFields.text: textField.text! as String]
-            sendMessage(data: data)
+            var data = [Constants.MessageFields.text: textField.text! as String]
+            sendMessage(data: &data)
             textField.resignFirstResponder()
         }
         return true
