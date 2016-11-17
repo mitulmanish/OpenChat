@@ -109,6 +109,7 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     func configureStorage() {
         // TODO: configure storage using your firebase storage
+        storageRef = FIRStorage.storage().reference()
     }
     
     deinit {
@@ -145,7 +146,7 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
             backgroundBlur.effect = nil
             messageTextField.delegate = self
             configureDatabase()
-            
+            configureStorage()
             // TODO: Set up app to send and receive messages when signed in
         }
     }
@@ -166,6 +167,17 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     func sendPhotoMessage(photoData: Data) {
         // TODO: create method that pushes message w/ photo to the firebase database
+        let imagePath = "photos/" + FIRAuth.auth()!.currentUser!.uid + "\(Double(Date.timeIntervalSinceReferenceDate * 1000))"
+        let imageMetadata = FIRStorageMetadata()
+        imageMetadata.contentType = "image/jpeg"
+        storageRef!.child(imagePath).put(photoData, metadata: imageMetadata) { (metadata, error) in
+            if let error = error {
+                print("There was an error uploading the image to server: \(error.localizedDescription)")
+                return
+            }
+            var dataDictionary = [Constants.MessageFields.imageUrl: self.storageRef.child(metadata!.path!).description]
+            self.sendMessage(data: &dataDictionary)
+        }
     }
     
     // MARK: Alert
@@ -228,6 +240,7 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     @IBAction func tappedView(_ sender: AnyObject) {
         resignTextfield()
     }
+    
 }
 
 // MARK: - FCViewController: UITableViewDelegate, UITableViewDataSource
@@ -242,11 +255,38 @@ extension FCViewController: UITableViewDelegate, UITableViewDataSource {
         // dequeue cell
         let cell: UITableViewCell! = messagesTable.dequeueReusableCell(withIdentifier: "messageCell", for: indexPath)
         let messageSnapShot: FIRDataSnapshot = messages[indexPath.row]
+        
         let message = messageSnapShot.value as! [String: String]
         let name = message[Constants.MessageFields.name] ?? "N/A"
-        let text = message[Constants.MessageFields.text] ?? "N/A"
-        cell.imageView?.image = placeholderImage
-        cell.textLabel?.text = name + " " + text
+        
+        if let imageURL = message[Constants.MessageFields.imageUrl] {
+            cell.textLabel?.text = "Sent by \(name)"
+            if let cachedImage = imageCache.object(forKey: imageURL as NSString) {
+                print("Reading from Cache")
+                cell.imageView?.image = cachedImage
+                cell.setNeedsLayout()
+            } else {
+                FIRStorage.storage().reference(forURL: imageURL).data(withMaxSize: .max, completion: { (data, error) in
+                    guard error == nil else {
+                        print(error.debugDescription)
+                        return
+                    }
+                    let imageToBeCached = UIImage(data: data!, scale: 50)
+                    self.imageCache.setObject(imageToBeCached!, forKey: imageURL as NSString)
+                    if cell == tableView.cellForRow(at: indexPath) {
+                        DispatchQueue.main.async {
+                            let image = UIImage(data: data!)
+                            cell.imageView?.image = image
+                            cell.setNeedsLayout()
+                        }
+                    }
+                })
+            }
+        } else {
+            let text = message[Constants.MessageFields.text] ?? "N/A"
+            cell.imageView?.image = placeholderImage
+            cell.textLabel?.text = name + ": " + text
+        }
         return cell!
         // TODO: update cell to display message data
     }
@@ -256,19 +296,27 @@ extension FCViewController: UITableViewDelegate, UITableViewDataSource {
     }
     
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-            // TODO: if message contains an image, then display the image
-    }
-    
-    // MARK: Show Image Display
-    
-    func showImageDisplay(_ image: UIImage) {
-        dismissImageRecognizer.isEnabled = true
-        dismissKeyboardRecognizer.isEnabled = false
-        messageTextField.isEnabled = false
-        UIView.animate(withDuration: 0.25) {
-            self.backgroundBlur.effect = UIBlurEffect(style: .light)
-            self.imageDisplay.alpha = 1.0
-            self.imageDisplay.image = image
+        // TODO: if message contains an image, then display the image
+        guard !messageTextField.isFirstResponder else {
+            return
+        }
+        
+        let messageSnapshot: FIRDataSnapshot! = messages[indexPath.row]
+        let message = messageSnapshot.value as! [String: String]
+        
+        if let imageURL = message[Constants.MessageFields.imageUrl] {
+            if let cachedImage = self.imageCache.object(forKey: imageURL as NSString) {
+                print("reading from Cache selectd image")
+                showImageDisplay(image: cachedImage)
+            } else {
+                FIRStorage.storage().reference(forURL: imageURL).data(withMaxSize: .max, completion: { (data, error) in
+                    guard error == nil else {
+                        print(error!.localizedDescription)
+                        return
+                    }
+                    self.showImageDisplay(image: UIImage(data: data!)!)
+                })
+            }
         }
     }
     
